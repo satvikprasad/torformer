@@ -233,7 +233,11 @@ class GPT(nn.Module):
         """
 
         # Embedding and unembedding
-        torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=0.8)
+        if isinstance(self.transformer.wte, nn.Embedding):
+            torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=0.8)
+        else:
+            # ToroidalEmbedding initializes itself in _init_parameters() called from __init__
+            pass
         torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
 
         # Transformer blocks: uniform init with bound = sqrt(3) * std (same standard deviation as normal)

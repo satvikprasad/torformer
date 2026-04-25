@@ -35,9 +35,9 @@ def _torus_map(rho: torch.Tensor, theta: torch.Tensor, gain: torch.Tensor | None
 
     if gain is not None:
         assert gain.shape == (rank - 1,), f"gain shape {gain.shape} != ({rank - 1},)"
-        g_sin = gain * sin_theta[..., -1]
+        g_sin = gain * sin_theta[..., :-1]   # (*, rank-1): gain-corrected sines for each coupling step
     else:
-        g_sin = sin_theta[..., -1]
+        g_sin = sin_theta[..., :-1]          # (*, rank-1)
 
     sigma_list = [rho[..., 0:1]] # sigma_1 = rho_1, shape (*, 1)
     for k in range(1, rank):
@@ -68,8 +68,8 @@ class ToroidalEmbedding(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, block_size: int = 2, gain: bool = True):
         super().__init__()
         assert embed_dim % block_size == 0, (
-            f"embed_dim ({embed_dim}) must be divisible by block_size ({block_size})"
-        )
+                f"embed_dim ({embed_dim}) must be divisible by block_size ({block_size})"
+                )
 
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -90,7 +90,7 @@ class ToroidalEmbedding(nn.Module):
 
         self._init_parameters()
 
-    def _init_parameters():
+    def _init_parameters(self):
         """Initialize radii and angles"""
         # TODO(satvik): Verify that negative rho make geometric sense here
         std = 0.8 / math.sqrt(self.rank) # Chosen to match typical std (~0.8)
