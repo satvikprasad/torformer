@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ablation: baseline vs toroidal embedding (B=2 flat torus) on a GPU-scaled model.
+# Ablation: baseline vs toroidal embedding vs toroidal + re-toroidalization.
 # Auto-detects GPU count and scales depth/iterations to match available compute.
 #
 # Run from torformer/nanochat/:
@@ -87,7 +87,7 @@ echo ""
 
 # ── Run 1: Baseline (standard nn.Embedding) ───────────────────────────────────
 echo "============================================================"
-echo " Run 1/2: Baseline (nn.Embedding)"
+echo " Run 1/3: Baseline (nn.Embedding)"
 echo "============================================================"
 $LAUNCHER scripts.base_train \
     "${COMMON[@]}" \
@@ -96,7 +96,7 @@ $LAUNCHER scripts.base_train \
 
 # ── Run 2: Toroidal embedding (B=2, flat torus) ───────────────────────────────
 echo "============================================================"
-echo " Run 2/2: Toroidal embedding (B=2, flat torus)"
+echo " Run 2/3: Toroidal embedding (B=2, flat torus)"
 echo "============================================================"
 $LAUNCHER scripts.base_train \
     "${COMMON[@]}" \
@@ -105,7 +105,33 @@ $LAUNCHER scripts.base_train \
     --model-tag=probe-torus-b2 \
     --run="${WANDB_RUN}-torus-b2"
 
+# ── Run 3: Toroidal embedding + re-toroidalization at every-other layer ────────
+# Apply B=4 re-toroidalization at even-indexed layers (0, 2, 4, ...) plus the
+# last layer, giving periodic re-projection back onto the manifold.
 echo "============================================================"
-echo " Done. Compare val BPB: probe-baseline vs probe-torus-b2"
+echo " Run 3/3: Toroidal embedding (B=2) + ReToroidalization (B=4, every other layer)"
+echo "============================================================"
+
+RETORUS_LAYERS=$(python3 -c "
+depth = $DEPTH
+layers = list(range(0, depth, 2))
+if (depth - 1) not in layers:
+    layers.append(depth - 1)
+print(','.join(str(l) for l in layers))
+")
+echo "  Re-toroidalization at layers: $RETORUS_LAYERS"
+
+$LAUNCHER scripts.base_train \
+    "${COMMON[@]}" \
+    --use-toroidal-embed \
+    --torus-block-size=2 \
+    --retorus-layers="$RETORUS_LAYERS" \
+    --retorus-block-size=4 \
+    --model-tag=probe-torus-b2-retorus \
+    --run="${WANDB_RUN}-torus-b2-retorus"
+
+echo "============================================================"
+echo " Done. Compare val BPB:"
+echo "   probe-baseline  vs  probe-torus-b2  vs  probe-torus-b2-retorus"
 echo " Checkpoints: \$NANOCHAT_BASE_DIR/base_checkpoints/"
 echo "============================================================"

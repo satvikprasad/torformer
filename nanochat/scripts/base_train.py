@@ -56,6 +56,11 @@ parser.add_argument("--window-pattern", type=str, default="SSSL", help="sliding 
 parser.add_argument("--use-toroidal-embed", action="store_true", help="use ToroidalEmbedding instead of nn.Embedding")
 parser.add_argument("--torus-block-size", type=int, default=2, help="block size B for ToroidalEmbedding (B=2: flat torus, B>2: hierarchical)")
 parser.add_argument("--torus-gain", action="store_true", default=True, help="use learnable gain factors in ToroidalEmbedding")
+# Re-toroidalization
+parser.add_argument("--retorus-layers", type=str, default="", help="comma-separated layer indices for re-toroidalization, e.g. '4,8,11'")
+parser.add_argument("--retorus-block-size", type=int, default=4, help="block size B for ReToroidalization (must divide n_embd)")
+parser.add_argument("--retorus-gain", action="store_true", default=True, help="learnable gain factors in ReToroidalization")
+parser.add_argument("--retorus-shared-proj", action="store_true", help="share projection matrices across all re-toroidalization blocks (O(B^2) params)")
 # Training horizon (only one used, in order of precedence)
 parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
 parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
@@ -137,6 +142,7 @@ def build_model_meta(depth):
     base_dim = depth * args.aspect_ratio
     model_dim = ((base_dim + args.head_dim - 1) // args.head_dim) * args.head_dim
     num_heads = model_dim // args.head_dim
+    retorus_layers = tuple(int(x) for x in args.retorus_layers.split(',') if x.strip())
     config = GPTConfig(
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
@@ -144,6 +150,10 @@ def build_model_meta(depth):
         use_toroidal_embed=args.use_toroidal_embed,
         torus_block_size=args.torus_block_size,
         torus_gain=args.torus_gain,
+        retorus_layers=retorus_layers,
+        retorus_block_size=args.retorus_block_size,
+        retorus_gain=args.retorus_gain,
+        retorus_shared_proj=args.retorus_shared_proj,
     )
     with torch.device("meta"):
         model_meta = GPT(config)

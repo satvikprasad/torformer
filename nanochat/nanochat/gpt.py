@@ -26,13 +26,16 @@ from nanochat.optim import MuonAdamW, DistMuonAdamW
 from nanochat.flash_attention import flash_attn
 
 # Our torformer imports reside here
-from torus.embedding import ToroidalEmbedding
+from torus.embedding import ToroidalEmbedding, ReToroidalization
 
 @dataclass
 class GPTConfig:
     torus_block_size: int = 2
     torus_gain: bool = True
     retorus_layers: tuple = ()
+    retorus_block_size: int = 4
+    retorus_gain: bool = True
+    retorus_shared_proj: bool = False
     use_toroidal_embed: bool = False
     sequence_len: int = 2048
     vocab_size: int = 32768
@@ -151,10 +154,20 @@ class Block(nn.Module):
         super().__init__()
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
+        self.retorus = None
+        if layer_idx in config.retorus_layers:
+            self.retorus = ReToroidalization(
+                embed_dim=config.n_embd,
+                block_size=config.retorus_block_size,
+                gain=config.retorus_gain,
+                shared_projections=config.retorus_shared_proj,
+            )
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)
         x = x + self.mlp(norm(x))
+        if self.retorus is not None:
+            x = self.retorus(x)
         return x
 
 
@@ -286,7 +299,10 @@ class GPT(nn.Module):
         # TODO: bump base theta more? e.g. 100K is more common more recently
         # autodetect the device from model embeddings
         if device is None:
-            device = self.transformer.wte.weight.device
+            wte = self.transformer.wte
+            # ToroidalEmbedding uses rho/theta; nn.Embedding uses weight
+            p = wte.rho if isinstance(wte, ToroidalEmbedding) else wte.weight
+            device = p.device
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
         inv_freq = 1.0 / (base ** (channel_range / head_dim))
@@ -375,15 +391,21 @@ class GPT(nn.Module):
         wte = sum(p.numel() for p in self.transformer.wte.parameters())
         value_embeds = sum(p.numel() for p in self.value_embeds.parameters())
         lm_head = sum(p.numel() for p in self.lm_head.parameters())
-        transformer_matrices = sum(p.numel() for p in self.transformer.h.parameters())
+        retorus = sum(
+            p.numel() for block in self.transformer.h
+            if block.retorus is not None
+            for p in block.retorus.parameters()
+        )
+        transformer_matrices = sum(p.numel() for p in self.transformer.h.parameters()) - retorus
         scalars = self.resid_lambdas.numel() + self.x0_lambdas.numel() + self.smear_gate.weight.numel() + self.smear_lambda.numel() + self.backout_lambda.numel()
-        total = wte + value_embeds + lm_head + transformer_matrices + scalars
+        total = wte + value_embeds + lm_head + transformer_matrices + retorus + scalars
         assert total == sum(p.numel() for p in self.parameters()), "Parameter count mismatch"
         return {
             'wte': wte,
             'value_embeds': value_embeds,
             'lm_head': lm_head,
             'transformer_matrices': transformer_matrices,
+            'retorus': retorus,
             'scalars': scalars,
             'total': total,
         }
@@ -392,15 +414,23 @@ class GPT(nn.Module):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
+        # Collect re-toroidalization params separately (projections + gains)
+        retorus_params = []
+        for block in self.transformer.h:
+            if block.retorus is not None:
+                retorus_params.extend(block.retorus.parameters())
+        retorus_param_ids = {id(p) for p in retorus_params}
+
         # Separate out all parameters into groups
-        matrix_params = list(self.transformer.h.parameters())
+        # Exclude retorus params from the block matrix params so they don't go to Muon
+        matrix_params = [p for p in self.transformer.h.parameters() if id(p) not in retorus_param_ids]
         value_embeds_params = list(self.value_embeds.parameters())
         embedding_params = list(self.transformer.wte.parameters())
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
         smear_params = [self.smear_gate.weight, self.smear_lambda, self.backout_lambda]
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params) + len(smear_params)
+        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params) + len(smear_params) + len(retorus_params)
 
         # Scale the LR for the AdamW parameters by ∝1/√dmodel (tuned for 768 dim model)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
@@ -416,6 +446,12 @@ class GPT(nn.Module):
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),  # higher beta1 for x0
             dict(kind='adamw', params=smear_params, lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
         ]
+        # Re-toroidalization projection matrices and gain factors (AdamW, embedding-like lr)
+        if retorus_params:
+            param_groups.append(
+                dict(kind='adamw', params=retorus_params, lr=embedding_lr * dmodel_lr_scale * 0.5,
+                     betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001)
+            )
         # Muon groups (matrix params, grouped by shape for stacking)
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
