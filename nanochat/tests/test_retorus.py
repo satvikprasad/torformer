@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import sys
 import os
+from typing import cast
 
 # Make the torus package importable when running from nanochat/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -18,10 +19,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from torus.embedding import (
     _torus_map,
     _torus_map_weierstrass,
-    ToroidalEmbedding,
     ReToroidalization,
 )
-from nanochat.gpt import GPT, GPTConfig
+from nanochat.gpt import GPT, GPTConfig, Block
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +218,8 @@ class TestGPTRetorus:
 
     def test_retorus_layers_attached(self):
         model = _make_gpt(n_layer=4, retorus_layers=(0, 2), retorus_block_size=4)
-        for i, block in enumerate(model.transformer.h):
+        blocks = cast(nn.ModuleList, model.transformer.h)
+        for i, block in enumerate(cast(list[Block], list(blocks))):
             if i in (0, 2):
                 assert block.retorus is not None, f"layer {i} should have retorus"
             else:
@@ -260,9 +261,10 @@ class TestGPTRetorus:
     def test_optimizer_retorus_in_adamw(self):
         """Retorus params must land in an adamw group, not muon."""
         model = _make_gpt(n_layer=4, retorus_layers=(1,), retorus_block_size=4)
+        blocks = cast(list[Block], list(cast(nn.ModuleList, model.transformer.h)))
         retorus_param_ids = {
             id(p)
-            for block in model.transformer.h if block.retorus is not None
+            for block in blocks if block.retorus is not None
             for p in block.retorus.parameters()
         }
         opt = model.setup_optimizer()
@@ -280,12 +282,13 @@ class TestGPTRetorus:
     def test_retorus_grad_updates(self):
         """Retorus W_rho receives a nonzero gradient; a manual SGD step changes it."""
         model = _make_gpt(n_layer=4, retorus_layers=(1,), retorus_block_size=4)
-        block = model.transformer.h[1]
+        block = cast(Block, cast(nn.ModuleList, model.transformer.h)[1])
 
         idx = torch.randint(0, 256, (2, 16))
         loss = model(idx, targets=idx)
         loss.backward()
 
+        assert block.retorus is not None
         W_rho = block.retorus.W_rho
         assert W_rho.grad is not None, "W_rho has no gradient"
         assert W_rho.grad.abs().sum() > 0, "W_rho gradient is all zeros"

@@ -1,0 +1,12 @@
+{
+  "venvPath": "nanochat",
+  "venv": ".venv",
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Darwin",
+  "include": [
+    "torus",
+    "nanochat"
+  ],
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none"
+}
