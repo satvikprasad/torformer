@@ -179,35 +179,6 @@ python -m pytest tests/ -v -m "not slow"                   # all fast tests
 
 ---
 
-### 8. Cloud: Azure spot provisioning
-
-Provisions an Azure Compute Fleet (spot A100) and bootstraps the full training run automatically.
-
-```bash
-# Prerequisites
-brew install azure-cli
-az login
-
-# Provision (defaults to westus3, tries NC96/NC48/NC24 A100 in order)
-bash provision_azure.sh
-
-# Use a different region
-LOCATION=uksouth bash provision_azure.sh
-
-# Once the VM is up, SSH in and launch
-ssh azureuser@<IP>
-nvidia-smi                    # verify GPU post-reboot
-bash ~/run_probe.sh           # run the ablation
-
-# Stream logs from your laptop
-ssh azureuser@<IP> 'tail -f ~/torus_probe.log'
-
-# Tear down (stops billing)
-bash provision_azure.sh --destroy
-```
-
----
-
 ## Repository Structure
 
 ```
@@ -229,7 +200,6 @@ torformer/
 │       └── ...
 ├── plots/
 │   └── plots.py              # Theory norm-bound plots
-├── provision_azure.sh        # Azure spot fleet provisioning
 └── pyproject.toml
 ```
 
